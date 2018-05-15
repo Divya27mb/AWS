@@ -1,0 +1,664 @@
+BACK UP 
+
+
+FNU_BOUND_TABLE 
+
+
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.sql import *
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.sql.functions import *
+
+
+## @params: [TempDir, JOB_NAME]
+args = getResolvedOptions(sys.argv, ['TempDir','JOB_NAME'])
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
+
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_people", transformation_ctx = "datasource0"]
+## @return: datasource0
+## @inputs: []
+datasource0 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_people", transformation_ctx = "datasource0")
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_addressschedule", redshift_tmp_dir = args["TempDir"], transformation_ctx = "<transformation_ctx>"]
+## @return: <output>
+## @inputs: []
+datasource1 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_addressschedule", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource1")
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_demographics", redshift_tmp_dir = args["TempDir"], transformation_ctx = "<transformation_ctx>"]
+## @return: <output>
+## @inputs: []
+datasource2 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_demographics", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource2")
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_academic", redshift_tmp_dir = args["TempDir"], transformation_ctx = "<transformation_ctx>"]
+## @return: <output>
+## @inputs: []
+datasource3 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_academic", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource3")
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_userdefinedind", redshift_tmp_dir = args["TempDir"], transformation_ctx = "<transformation_ctx>"]
+## @return: <output>
+## @inputs: []
+datasource4 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_userdefinedind", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource4")
+
+## @type: DataSource
+## @args: [database = "clinicals_database", table_name = "clinicals_dbo_bounds", redshift_tmp_dir = args["TempDir"], transformation_ctx = "<transformation_ctx>"]
+## @return: <output>
+## @inputs: []
+datasource5 = glueContext.create_dynamic_frame.from_catalog(database = "clinicals_database", table_name = "clinicals_dbo_bounds", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource5")
+
+
+
+df0 = datasource0.toDF()
+df1 = datasource1.toDF()
+df2 = datasource2.toDF()
+df3 = datasource3.toDF()
+df4 = datasource4.toDF()
+df5 = datasource5.toDF()
+df5 = df5.withColumn("start_date", from_unixtime(unix_timestamp(df5.start_date), "MM/dd/yyyy"))
+
+
+df0.createOrReplaceTempView("people")
+df1.createOrReplaceTempView("addressschedule")
+df2.createOrReplaceTempView("demographics")
+df3.createOrReplaceTempView("academic")
+df4.createOrReplaceTempView("userdefinedind")
+df5.createOrReplaceTempView("bounds")
+
+l = ['2016','2017','2018']
+for i in range(len(l)):
+
+    sql_df1 = spark.sql ("""select distinct p.people_id,p.last_name, p.first_name,
+    (select  max(primary_language) from demographics where people_id = p.people_id and academic_year =''
+     ) as class,
+    (select max(program) from academic where people_id = p.people_id and program != 'NONDEG' 
+     ) as Program,
+    (select  max(degree) from academic where people_id = p.people_id and degree != 'NONDEG'
+    ) as Degree,
+    (select  max(curriculum) from academic where people_id = p.people_id and curriculum != 'NONMAT' and app_status != 'CANC'
+    ) as Curriculum,
+    s.address_line_1, s.address_line_2,house_number,s.city as City,s.state as State,s.zip_code,
+    email_address as Email_Address, (select  max(email_address) from addressschedule where people_org_id = p.people_id
+    and address_type = 'FNU' ) as fnu_email,
+    (select  max(app_status) from academic where app_status is not null and people_id = p.people_id and app_status != 'CANC' ) as app_status,
+    (select max(app_decision) from academic where  app_decision is not null and people_id = p.people_id and app_decision != 'DEF'
+     ) as app_decision,
+    (select  max(fin_aid_candidate) from academic where  app_decision is not null and people_id = p.people_id
+     ) as Fin_Aid,
+    (select  max(COLLEGE_ATTEND) from academic where  app_decision is not null and people_id = p.people_id
+     ) as College_Attendance, u.BoundDate as BoundDate, b.event_type,
+      u.PA, u.STATS
+    from people p join addressschedule s on p.people_code_id = s.people_org_code_id
+    join demographics d on p.people_code_id = d.people_code_id
+    join academic a on p.people_code_id = a.people_code_id
+    join userdefinedind u on p.people_id = u.people_id
+    join bounds b on u.bounddate = b.start_date
+    where s.address_type = 'PERM'
+    and d.primary_language is not null
+    and s.status = 'A'
+    and s.end_date is null
+    and a.app_status in ('APAC','COMP')
+    and a.curriculum !='NONMAT'
+    and u.BoundDate like '%"""+l[i]+"""' """.replace('\n',' '))
+    
+    new_dynamic_frame1 = DynamicFrame.fromDF(sql_df1, glueContext, "new_dynamic_frame1")
+    ndf1 = new_dynamic_frame1.toDF()
+    ndf1.createOrReplaceTempView("frame1")
+    
+    sql_df2 = spark.sql("""select distinct people_id as People_ID,last_name as Last_Name, first_name as First_Name,class,
+    Program,Degree,Curriculum,address_line_1 as Address_Line_1,address_line_2 as Address_Line_2,
+    house_number,city,state,zip_code as Zip_Code,fnu_email,email_address,app_status,app_decision,fin_aid,bounddate,
+    event_type as bound_type,College_Attendance,
+    PA,STATS
+    from frame1 where app_status in ('APAC','COMP')
+    """.replace('\n',' '))
+    
+    new_dynamic_frame2 = DynamicFrame.fromDF(sql_df2, glueContext, "new_dynamic_frame2")
+    ndf2 = new_dynamic_frame2.toDF()
+    ndf2.createOrReplaceTempView("frame2")
+    
+    sql_df =spark.sql ("""select * from frame2 where not ((curriculum  = 'DNP' and bound_type != 'DNP') or (curriculum !='DNP' and bound_type = 'DNP' )) order by Last_Name""".replace('\n',' '))
+    new_dynamic_frame = DynamicFrame.fromDF(sql_df, glueContext, "new_dynamic_frame")
+    
+    
+    
+    ## @type: DataSink
+    ## @args: [catalog_connection = "Fnu_Dwh_Redshift", connection_options = {"dbtable": "powercampus_dbo_people", "database": "dwhfnu"}, redshift_tmp_dir = TempDir, transformation_ctx = "datasink4"]
+    ## @return: datasink4
+    ## @inputs: [frame = dropnullfields3]
+    datasink4 = glueContext.write_dynamic_frame.from_jdbc_conf(frame = new_dynamic_frame, catalog_connection = "Fnu_Dwh_Redshift", connection_options = {"dbtable": "FNU_bound_year", "database": "dwhfnu"}, redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasink4")
+
+job.commit()
+
+
+FNU_Tearm_Year_Wise_Count
+
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.sql import *
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.sql.functions import *
+
+
+## @params: [TempDir, JOB_NAME]
+args = getResolvedOptions(sys.argv, ['TempDir','JOB_NAME'])
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
+
+l1= ['2016','2017','2018']
+l2=['SUMMER','WINTER','FALL','SPRING']
+
+## @type: DataSource
+## @args: [database = "redshift_dwh", table_name = "dwhfnu_public_fnu_applicants", redshift_tmp_dir = args["TempDir"], transformation_ctx = "<transformation_ctx>"]
+## @return: <output>
+## @inputs: []
+datasource0 = glueContext.create_dynamic_frame.from_catalog(database = "redshift_dwh", table_name = "dwhfnu_public_fnu_applicants", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource0")
+
+
+## @type: DataSource
+## @args: [database = "redshift_dwh", table_name = "dwhfnu_public_fnu_appdecisionfinal", redshift_tmp_dir = args["TempDir"], transformation_ctx = "<transformation_ctx>"]
+## @return: <output>
+## @inputs: []
+datasource1 = glueContext.create_dynamic_frame.from_catalog(database = "redshift_dwh", table_name = "dwhfnu_public_fnu_appdecisionfinal", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource1")
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_people", redshift_tmp_dir = args["TempDir"], transformation_ctx = "<transformation_ctx>"]
+## @return: <output>
+## @inputs: []
+datasource2 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_people", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource2")
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_academic", redshift_tmp_dir = args["TempDir"], transformation_ctx = "<transformation_ctx>"]
+## @return: <output>
+## @inputs: []
+datasource3 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_academic", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource3")
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_demographics", redshift_tmp_dir = args["TempDir"], transformation_ctx = "datasource1"]
+## @return: <output>
+## @inputs: []
+datasource4 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_demographics", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource4")
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_addressschedule", redshift_tmp_dir = args["TempDir"], transformation_ctx = "<transformation_ctx>"]
+## @return: <output>
+## @inputs: []
+datasource5 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_addressschedule", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource5")
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_transcriptdetail", redshift_tmp_dir = args["TempDir"], transformation_ctx = "<transformation_ctx>"]
+## @return: <output>
+## @inputs: []
+datasource6 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_transcriptdetail", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource6")
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_code_enrollment", redshift_tmp_dir = args["TempDir"], transformation_ctx = "<transformation_ctx>"]
+## @return: <output>
+## @inputs: []
+datasource7 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_code_enrollment", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource7")
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_transcriptgpa", redshift_tmp_dir = args["TempDir"], transformation_ctx = "<transformation_ctx>"]
+## @return: <output>
+## @inputs: []
+datasource8 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_transcriptgpa", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource8")
+
+
+
+df0 = datasource0.toDF()
+df1 = datasource1.toDF()
+df2 = datasource2.toDF()
+df3 = datasource3.toDF()
+df4 = datasource4.toDF()
+df5 = datasource5.toDF()
+df6 = datasource6.toDF()
+df7 = datasource7.toDF()
+df8 = datasource8.toDF()
+
+df0.createOrReplaceTempView("Applicants")
+df1.createOrReplaceTempView("Appdecisionfinal")
+df2.createOrReplaceTempView("people")
+df3.createOrReplaceTempView("academic")
+df4.createOrReplaceTempView("demographics")
+df5.createOrReplaceTempView("addressschedule")
+df6.createOrReplaceTempView("transcriptdetail")
+df7.createOrReplaceTempView("code_enrollment")
+df8.createOrReplaceTempView("transcriptgpa")
+
+for i in range(len(l1)):
+    for j in range(len(l2)):
+        sql_df1 = spark.sql ("""select distinct p.people_id, p.personid,p.last_name as Last_name, p.first_name as First_Name, a.app_status as Application_status,s.email_address
+        from people p 
+        join academic a on p.people_id = a.people_id
+        join addressschedule s on p.people_id = s.people_org_id
+        where 
+        a.curriculum = 'NONMAT'
+        and a.academic_year = '"""+l1[i]+"""'
+        and a.academic_term = '"""+l2[j]+"""'
+        and s.status = 'A'
+        and s.address_type = 'PERM'
+        and a.app_status in ('LETT','AAP','COMP')""".replace('/n',' '))
+        
+        sql_df2 = spark.sql("""select p.last_name as Last_name, p.first_name as First_Name, t.event_id as Course
+        from people p 
+        join transcriptdetail t on p.people_id = t.people_id
+        join academic a on p.people_id = a.people_id
+        where t.academic_year = '"""+l1[i]+"""'
+        and t.academic_term = '"""+l2[j]+"""'
+        and a.academic_year = t.academic_year
+        and a.academic_term = t.academic_term
+        and a.curriculum = 'NONMAT'
+        and a.primary_flag = 'Y'
+        and a.academic_session = 'MAIN'
+        """.replace('/n',' '))
+        
+        sql_df3 = spark.sql("""select distinct p.people_id as People_ID,
+        p.last_name as Last_Name,p.first_name as First_Name,a.curriculum as Curriculum, g.gpa as GPA,
+        e.medium_desc as Enroll_Status, t.event_id as Course, t.final_grade Final_Grade
+        from people p join transcriptgpa g on p.people_id = g.people_id
+        join academic a on p.people_id = a.people_id
+        join code_enrollment e on e.code_value = a.enroll_separation
+        join transcriptdetail t on p.people_id = t.people_id
+        where 
+        g.academic_year = '"""+l1[i]+"""'
+        and g.academic_term = '"""+l2[j]+"""'
+        and a.academic_year = g.academic_year
+        and a.academic_term = g.academic_term
+        and a.academic_year = t.academic_year
+        and a.academic_term = t.academic_term
+        and a.primary_flag = 'Y'
+        and a.academic_session = 'MAIN'
+        and record_type = 'C'
+        and final_grade != 'T'
+        and gpa > '0.000001' 
+        and gpa < '3'
+        """.replace('/n',' '))
+        
+        
+        sql_df4 = spark.sql("""select distinct p.people_id as People_ID,last_name as Last_Name, first_name as First_Name,a.program,a.degree,
+        a.curriculum as Curriculum, t.event_id as Course, d.primary_language as Class_Number,a.enroll_separation,
+        t.final_grade as Final_Grade
+        from people p join transcriptdetail t on p.people_id = t.people_id
+        join academic a on p.people_id = a.people_id
+        join demographics d on p.people_id = d.people_id
+        where a.academic_year = '"""+l1[i]+"""' and a.academic_term = '"""+l2[j]+"""'
+        and t.academic_year = a.academic_year
+        and t.academic_term = a.academic_term
+        and d.academic_year = a.academic_year
+        and d.academic_term = a.academic_term
+        and t.FINAL_GRADE LIKE '%F%'
+        and a.primary_flag = 'Y'
+        """.replace('/n',' '))
+        
+        new_dynamic_frame1 = DynamicFrame.fromDF(sql_df1, glueContext, "new_dynamic_frame1")
+        new_dynamic_frame2 = DynamicFrame.fromDF(sql_df2, glueContext, "new_dynamic_frame2")
+        new_dynamic_frame3 = DynamicFrame.fromDF(sql_df3, glueContext, "new_dynamic_frame3")
+        new_dynamic_frame4 = DynamicFrame.fromDF(sql_df4, glueContext, "new_dynamic_frame4")
+        
+        ndf1 = new_dynamic_frame1.toDF()
+        ndf2 = new_dynamic_frame2.toDF()
+        ndf3 = new_dynamic_frame3.toDF()
+        ndf4 = new_dynamic_frame4.toDF()
+        
+        ndf1.createOrReplaceTempView("frame1")
+        ndf2.createOrReplaceTempView("frame2")
+        ndf3.createOrReplaceTempView("frame3")
+        ndf4.createOrReplaceTempView("frame4")
+        
+        sql_f1 = spark.sql("""
+        select PEOPLE_CODE_ID 
+        FROM Applicants WHERE  academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and
+        CODE_VALUE_KEY='INC' AND (PEOPLE_CODE_ID NOT IN 
+        (SELECT PEOPLE_CODE_ID FROM Appdecisionfinal WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and LONG_DESC IN ('Accepted','Deferred'))) AND (PEOPLE_CODE_ID NOT IN 
+        (SELECT PEOPLE_CODE_ID FROM Applicants WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and CODE_VALUE_KEY IN ('COMP','LETT','WAIT','DECF','CANC','APD')))""".replace('\n',' '))
+        
+        
+        
+        sql_f2 = spark.sql("""select  PEOPLE_CODE_ID 
+        FROM Appdecisionfinal WHERE  academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and
+        ((LONG_DESC = 'Accepted') OR
+        (LONG_DESC = 'Pending'  AND PEOPLE_CODE_ID IN(SELECT PEOPLE_CODE_ID
+        FROM Applicants WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""' and CODE_VALUE_KEY IN ('APAC','APD','LETT','COMP'))))""".replace('\n',' '))
+        
+        sql_f3 = spark.sql("""SELECT PEOPLE_CODE_ID FROM Applicants WHERE  academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and CODE_VALUE_KEY='DECF' 
+         and PEOPLE_CODE_ID NOT IN (select PEOPLE_CODE_ID from Appdecisionfinal where academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and LONG_DESC='Accepted')""".replace('\n',' '))
+         
+        sql_f4 = spark.sql("""SELECT DISTINCT PEOPLE_CODE_ID FROM Applicants WHERE  academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""' and CODE_VALUE_KEY='CANC' AND 
+        (PEOPLE_CODE_ID NOT IN 
+        (SELECT PEOPLE_CODE_ID FROM Applicants WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""' and CODE_VALUE_KEY IN ('DECF','LETT','APAC','COMP','APD')) and PEOPLE_CODE_ID NOT IN (SELECT PEOPLE_CODE_ID FROM Appdecisionfinal WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and LONG_DESC = 'Accepted')) 
+         """.replace('\n',' '))
+        
+        sql_f41 = spark.sql("""SELECT DISTINCT PEOPLE_CODE_ID FROM Applicants WHERE  academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""' and CODE_VALUE_KEY='CANC' AND (LONG_DESC = 'Deferred' AND PEOPLE_CODE_ID NOT IN (SELECT PEOPLE_CODE_ID FROM Applicants WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""' and (CODE_VALUE_KEY='DECF' OR CODE_VALUE_KEY= 'LETT' or CODE_VALUE_KEY = 'APAC' OR CODE_VALUE_KEY = 'COMP' OR CODE_VALUE_KEY='CANC')))""".replace('\n',' '))
+        
+        sql_f5 = spark.sql("""SELECT PEOPLE_CODE_ID FROM Applicants WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and  CODE_VALUE_KEY='WAIT' 
+        and PEOPLE_CODE_ID NOT IN 
+        (SELECT PEOPLE_CODE_ID FROM Applicants WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and CODE_VALUE_KEY IN ('LETT','DECF','CANC','APD')) AND PEOPLE_CODE_ID NOT IN (SELECT
+        PEOPLE_CODE_ID FROM Appdecisionfinal WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and LONG_DESC IN ('Accepted','Deferred'))""".replace('\n',' '))
+        
+        sql_f6 = spark.sql("""SELECT distinct PEOPLE_CODE_ID FROM Appdecisionfinal WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and
+        ( LONG_DESC = 'Pending' 
+        AND PEOPLE_CODE_ID IN (SELECT PEOPLE_CODE_ID
+        FROM Applicants WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and CODE_VALUE_KEY='APAC') AND PEOPLE_CODE_ID NOT IN (SELECT PEOPLE_CODE_ID FROM Applicants WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""' and CODE_VALUE_KEY IN ('APD','DECF')))""".replace('\n',' '))
+        
+        sql_f61 = spark.sql("""SELECT distinct PEOPLE_CODE_ID FROM  Appdecisionfinal WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""' AND LONG_DESC ='Accepted' """.replace('\n',' '))
+        
+        sql_f7 = spark.sql("""SELECT  PEOPLE_CODE_ID FROM Applicants WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and CODE_VALUE_KEY='APD' and people_code_id IN (SELECT PEOPLE_CODE_ID 
+        FROM Appdecisionfinal WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""' and LONG_DESC='Pending') and PEOPLE_CODE_ID NOT IN (select PEOPLE_CODE_ID from Applicants where academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""' and code_value_key = 'DECF')""".replace('\n',' '))
+        
+        sql_f8 = spark.sql("""Select DISTINCT PEOPLE_CODE_ID FROM Applicants WHERE  academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and CODE_VALUE_KEY='CANC' AND 
+        (PEOPLE_CODE_ID IN 
+        (SELECT PEOPLE_CODE_ID FROM Applicants WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and CODE_VALUE_KEY IN ('LETT','COMP') 
+        AND PEOPLE_CODE_ID IN (SELECT PEOPLE_CODE_ID FROM Appdecisionfinal WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and LONG_DESC='Deferred'))) 
+        """.replace('\n',' '))
+        
+        sql_f81 = spark.sql("""Select DISTINCT PEOPLE_CODE_ID FROM Applicants WHERE  academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and CODE_VALUE_KEY='CANC' AND (PEOPLE_CODE_ID IN 
+        (SELECT PEOPLE_CODE_ID FROM Applicants WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and CODE_VALUE_KEY='APAC') 
+        and PEOPLE_CODE_ID NOT IN (SELECT PEOPLE_CODE_ID FROM Applicants WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""' and CODE_VALUE_KEY IN ('COMP','DECF', 'APD', 'LETT', 'NSHO')))""".replace('\n',' '))
+        
+        sql_f9 = spark.sql("""SELECT  PEOPLE_CODE_ID FROM Applicants WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and CODE_VALUE_KEY='ANR' 
+        and people_code_id IN (SELECT PEOPLE_CODE_ID FROM Applicants WHERE academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and (CODE_VALUE_KEY='LETT' OR CODE_VALUE_KEY= 'APAC'))
+        and PEOPLE_CODE_ID NOT IN  (select PEOPLE_CODE_ID from Applicants where academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'  and code_value_key IN('CANC','APD', 'APAC'))""".replace('\n',' '))
+        
+        my_dynamic_frame1 = DynamicFrame.fromDF(sql_f1, glueContext, "my_dynamic_frame1")
+        my_dynamic_frame2 = DynamicFrame.fromDF(sql_f2, glueContext, "my_dynamic_frame2")
+        my_dynamic_frame3 = DynamicFrame.fromDF(sql_f3, glueContext, "my_dynamic_frame3")
+        my_dynamic_frame4 = DynamicFrame.fromDF(sql_f4, glueContext, "my_dynamic_frame4")
+        my_dynamic_frame41 = DynamicFrame.fromDF(sql_f41, glueContext, "my_dynamic_frame41")
+        my_dynamic_frame5 = DynamicFrame.fromDF(sql_f5, glueContext, "my_dynamic_frame5")
+        my_dynamic_frame6 = DynamicFrame.fromDF(sql_f6, glueContext, "my_dynamic_frame6")
+        my_dynamic_frame61 = DynamicFrame.fromDF(sql_f61, glueContext, "my_dynamic_frame61")
+        my_dynamic_frame7 = DynamicFrame.fromDF(sql_f7, glueContext, "my_dynamic_frame7")
+        my_dynamic_frame8 = DynamicFrame.fromDF(sql_f8, glueContext, "my_dynamic_frame8")
+        my_dynamic_frame81 = DynamicFrame.fromDF(sql_f81, glueContext, "my_dynamic_frame81")
+        my_dynamic_frame9 = DynamicFrame.fromDF(sql_f9, glueContext, "my_dynamic_frame9")
+        
+        
+        
+        f1 = my_dynamic_frame1.toDF()
+        f2 = my_dynamic_frame2.toDF()
+        f3 = my_dynamic_frame3.toDF()
+        f4 = my_dynamic_frame4.toDF()
+        f41 = my_dynamic_frame41.toDF()
+        f5 = my_dynamic_frame5.toDF()
+        f6 = my_dynamic_frame6.toDF()
+        f61 = my_dynamic_frame61.toDF()
+        f7 = my_dynamic_frame7.toDF()
+        f8 = my_dynamic_frame8.toDF()
+        f81 = my_dynamic_frame81.toDF()
+        f9 = my_dynamic_frame9.toDF()
+        
+        
+        f1.createOrReplaceTempView("table1")
+        f2.createOrReplaceTempView("table2")
+        f3.createOrReplaceTempView("table3")
+        f4.createOrReplaceTempView("table4")
+        f41.createOrReplaceTempView("table41")
+        f5.createOrReplaceTempView("table5")
+        f6.createOrReplaceTempView("table6")
+        f61.createOrReplaceTempView("table61")
+        f7.createOrReplaceTempView("table7")
+        f8.createOrReplaceTempView("table8")
+        f81.createOrReplaceTempView("table81")
+        f9.createOrReplaceTempView("table9")
+        
+        
+        sql_df = spark.sql("""SELECT  distinct
+        (select COUNT (DISTINCT PEOPLE_CODE_ID) 
+        FROM Applicants where academic_term = '"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""' ) as Total_Applicant_Count,
+        (select COUNT (DISTINCT PEOPLE_CODE_ID) from table1 ) as Incomplete_Application,
+        (select COUNT (DISTINCT PEOPLE_CODE_ID) from table2) as Offered_Admission,
+        (select COUNT (DISTINCT PEOPLE_CODE_ID) from table3) as FNU_Declines,
+        (select count(*) from table4 full outer join table41 on table4.PEOPLE_CODE_ID = table41.PEOPLE_CODE_ID) AS Deferred,
+        (select COUNT (DISTINCT PEOPLE_CODE_ID) from table5) as Waitlist ,
+        (select count(*) from table6 full outer join table61 on table6.PEOPLE_CODE_ID = table61.PEOPLE_CODE_ID) as Accepted_offer,
+        (select COUNT (DISTINCT PEOPLE_CODE_ID) from table7) as Declined_Offer ,
+        (select count(*) from table8 full outer join table81 on table8.PEOPLE_CODE_ID = table81.PEOPLE_CODE_ID) as Deferred_After_Offer,
+        (select COUNT (DISTINCT PEOPLE_CODE_ID) from table9) as No_Response_After_Offer ,
+        (select count(distinct p.people_id)  from people p
+         join academic a on p.people_id = a.people_id
+         where a.academic_term = '"""+l2[j]+"""' and a.academic_year = '"""+l1[i]+"""'
+         and a.app_decision = 'ACC') as  Total_Admits,
+        ( select count(distinct p.people_id) 
+        from people p join academic a on p.people_id = a.people_id
+        where 
+        a.academic_year = '"""+l1[i]+"""'
+        and a.academic_term = '"""+l2[j]+"""'
+        and a.enroll_separation in ('ENRL','LOA','ESTC')
+        and a.status in ('A','G')
+        and a.primary_flag = 'Y' and a.academic_session = 'MAIN'
+        and a.academic_flag = 'Y'
+        and p.first_name !='STATUS') as  Total_Enrollment,
+        (select count(*) from frame1) as Non_Matric_applicants ,
+        (select count(*) from frame2) as Total_Enrolled_Non_Matric_Students,
+        (select count(*) from frame3) as Failing_GPA_Count ,
+        (select count(*) from frame4) as Failing_Grades_Count,
+        academic_term, academic_year
+        from Appdecisionfinal  where academic_term ='"""+l2[j]+"""' and academic_year = '"""+l1[i]+"""'    
+        """.replace('\n',' '))
+        
+        new_dynamic_frame = DynamicFrame.fromDF(sql_df, glueContext, "new_dynamic_frame")
+        
+        ## @type: DataSink
+        ## @args: [catalog_connection = "Fnu_Dwh_Redshift", connection_options = {"dbtable": "dwhfnu_public_applicants", "database": "dwhfnu"}, redshift_tmp_dir = TempDir, transformation_ctx = "datasink4"]
+        ## @return: datasink4
+        ## @inputs: [frame = dropnullfields3]
+        datasink4 = glueContext.write_dynamic_frame.from_jdbc_conf(frame = new_dynamic_frame, catalog_connection = "Fnu_Dwh_Redshift", connection_options = {"dbtable": "FNU_YEAR_TERM_WISE_COUNTS", "database": "dwhfnu"}, redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasink4")
+job.commit()
+
+
+
+
+
+
+
+"""
+
+(select COUNT (DISTINCT PEOPLE_CODE_ID) from table4) as Deferred,
+(select COUNT (DISTINCT PEOPLE_CODE_ID) from table6) as Accepted_offer ,
+(select COUNT (DISTINCT PEOPLE_CODE_ID) from table8) as Deferred_After_Offer  ,
+
+
+
+f1 = df1.filter(col('LONG_DESC').isin(['ACCEPTED','DEFERRED']))
+f2 = df0.filter(col('CODE_VALUE_KEY').isin(['COMP','LETT','WAIT','DECF','CANC','APD']))
+f3 = df0.filter(~col('PEOPLE_CODE_ID').isin(f1.select("PEOPLE_CODE_ID").rdd.flatMap(lambda x: x).collect()))
+f4 = df0.filter(~col('PEOPLE_CODE_ID').isin(f2.select("PEOPLE_CODE_ID").rdd.flatMap(lambda x: x).collect()))
+
+ndf5 = df0.where((col(CODE_VALUE_KEY) == 'INC') & (f3.filter(col('PEOPLE_CODE_ID').isin(f4.select("PEOPLE_CODE_ID").rdd.flatMap(lambda x: x).collect()))))
+ndf5.createOrReplaceTempView("frame5")
+
+
+(select COUNT (DISTINCT PEOPLE_CODE_ID) 
+FROM Applicants WHERE 
+CODE_VALUE_KEY='INC' AND (PEOPLE_CODE_ID NOT IN 
+(SELECT PEOPLE_CODE_ID FROM Appdecisionfinal WHERE LONG_DESC IN ('ACCEPTED','DEFERRED'))) AND (PEOPLE_CODE_ID NOT IN 
+(SELECT PEOPLE_CODE_ID FROM Applicants WHERE CODE_VALUE_KEY IN ('COMP','LETT','WAIT','DECF','CANC','APD'))))
+as Incomplete_Application,
+(select COUNT (DISTINCT PEOPLE_CODE_ID) 
+FROM Appdecisionfinal WHERE  
+( (long_desc = 'ACCEPTED')
+OR
+(long_desc = 'PENDING'  AND PEOPLE_CODE_ID IN (SELECT PEOPLE_CODE_ID
+FROM Applicants WHERE CODE_VALUE_KEY in ('APAC', 'APD', 'LETT', 'COMP')))
+))as Offered_Admission,
+(SELECT COUNT (DISTINCT PEOPLE_CODE_ID) FROM Applicants WHERE  CODE_VALUE_KEY='DECF' 
+ and PEOPLE_CODE_ID not in (select PEOPLE_CODE
+_ID from Appdecisionfinal where LONG_DESC='ACCEPTED')) as FNU_Declines,
+(SELECT COUNT (DISTINCT PEOPLE_CODE_ID) FROM Applicants WHERE 
+CODE_VALUE_KEY='CANC'   AND 
+((PEOPLE_CODE_ID NOT IN 
+(SELECT PEOPLE_CODE_ID FROM Applicants WHERE CODE_VALUE_KEY IN ('DECF','LETT','APAC','COMP','APD') ) and PEOPLE_CODE_ID NOT IN (SELECT PEOPLE_CODE_ID
+FROM Appdecisionfinal WHERE LONG_DESC = 'ACCEPTED'))
+OR
+(LONG_DESC = 'DEFERRED' AND PEOPLE_CODE_ID NOT IN (SELECT PEOPLE_CODE_ID FROM Applicants WHERE CODE_VALUE_KEY='DECF'OR CODE_VALUE_KEY= 'LETT' or CODE_VALUE_KEY = 'APAC' OR CODE_VALUE_KEY = 'COMP' OR CODE_VALUE_KEY='CANC'))))
+as Deferred,
+(SELECT COUNT (DISTINCT PEOPLE_CODE_ID) FROM Applicants WHERE  CODE_VALUE_KEY='WAIT' 
+and PEOPLE_CODE_ID NOT IN 
+(SELECT PEOPLE_CODE_ID FROM Applicants WHERE CODE_VALUE_KEY in ('LETT','DECF','CANC','APD')) AND PEOPLE_CODE_ID NOT IN (SELECT
+PEOPLE_CODE_ID FROM Appdecisionfinal WHERE LONG_DESC in ('ACCEPTED','DEFERRED'))) as Waitlist,
+(SELECT COUNT (DISTINCT PEOPLE_CODE_ID) FROM Appdecisionfinal WHERE 
+( LONG_DESC = 'PENDING' 
+AND PEOPLE_CODE_ID IN (SELECT PEOPLE_CODE_ID
+FROM Applicants WHERE CODE_VALUE_KEY='APAC') AND PEOPLE_CODE_ID NOT IN (SELECT PEOPLE_CODE_ID FROM Applicants WHERE CODE_VALUE_KEY in('APD','DECF'))
+OR LONG_DESC = 'ACCEPTED')) as Accepted_Offer,
+(SELECT count(DISTINCT PEOPLE_CODE_ID) FROM Applicants WHERE  CODE_VALUE_KEY='APD' and people_code_id in (SELECT PEOPLE_CODE_ID 
+FROM Appdecisionfinal WHERE LONG_DESC='PENDING') and PEOPLE_CODE_ID not in (select PEOPLE_CODE_ID from Applicants where code_value_key = 'DECF'))
+as Declined_Offer,
+(Select COUNT(DISTINCT PEOPLE_CODE_ID) FROM Applicants WHERE   CODE_VALUE_KEY='CANC' AND 
+((PEOPLE_CODE_ID IN 
+(SELECT PEOPLE_CODE_ID FROM Applicants WHERE  CODE_VALUE_KEY in('LETT','COMP') 
+AND PEOPLE_CODE_ID IN (SELECT PEOPLE_CODE_ID FROM Appdecisionfinal WHERE long_desc='DEFERRED'))) OR
+(PEOPLE_CODE_ID IN 
+(SELECT PEOPLE_CODE_ID FROM Applicants WHERE  CODE_VALUE_KEY='APAC') 
+and PEOPLE_CODE_ID NOT IN (SELECT PEOPLE_CODE_ID FROM Applicants WHERE CODE_VALUE_KEY in ('COMP','DECF', 'APD', 'LETT', 'NSHO'))))
+) as Deferred_After_Offer,
+(SELECT Count(distinct PEOPLE_CODE_ID) FROM Applicants WHERE CODE_VALUE_KEY='ANR' 
+and people_code_id in (SELECT PEOPLE_CODE_ID FROM Applicants WHERE  CODE_VALUE_KEY='LETT' OR CODE_VALUE_KEY= 'APAC')
+and PEOPLE_CODE_ID not in (select PEOPLE_CODE_ID from Applicants where code_value_key in('CANC','APD', 'APAC'))) as No_Response_After_Offer,"""
+
+
+
+
+FNU_Metrics
+
+
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.sql import *
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.sql.functions import *
+
+
+## @params: [TempDir, JOB_NAME]
+args = getResolvedOptions(sys.argv, ['TempDir','JOB_NAME'])
+
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
+
+
+l1= ['2016','2017','2018']
+l2=['SUMMER','WINTER','FALL','SPRING']
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_stagehistory", transformation_ctx = "datasource0"]
+## @return: datasource0
+## @inputs: []
+datasource0 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_stagehistory", transformation_ctx = "datasource0")
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_stageranking", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource1"]
+## @return: datasource1
+## @inputs: []
+datasource1 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_stageranking", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource1")
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_code_appstatus", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource2"]
+## @return: datasource2
+## @inputs: []
+datasource2 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_code_appstatus", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource2")
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_academic", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource3"]
+## @return: datasource3
+## @inputs: []
+datasource3 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_academic", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource3")
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_code_appdecision", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource4"]
+## @return: datasource4
+## @inputs: []
+datasource4 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_code_appdecision", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource4")
+
+## @type: DataSource
+## @args: [database = "powercampus_database", table_name = "powercampus_dbo_people", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource5"]
+## @return: datasource5
+## @inputs: []
+datasource5 = glueContext.create_dynamic_frame.from_catalog(database = "powercampus_database", table_name = "powercampus_dbo_people", redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasource5")
+
+
+df0 = datasource0.toDF()
+df1 = datasource1.toDF()
+df2 = datasource2.toDF()
+df3 = datasource3.toDF()
+df4 = datasource4.toDF()
+df5 = datasource5.toDF()
+
+
+df0.createOrReplaceTempView("stagehistory")
+df1.createOrReplaceTempView("stageranking")
+df2.createOrReplaceTempView("code_appstatus")
+df3.createOrReplaceTempView("academic")
+df4.createOrReplaceTempView("code_appdecision")
+df5.createOrReplaceTempView("people")
+
+
+for i in range(len(l1)):
+    for j in range(len(l2)):
+        sql_df = spark.sql("""SELECT distinct s.STAGEHISTORY_ID, s.PEOPLE_CODE_ID, people.FIRST_NAME, people.LAST_NAME,s.ACADEMIC_YEAR,s.ACADEMIC_TERM,s.DEGREE,s.CURRICULUM,r.CODE_VALUE_KEY,app.LONG_DESC,a.APPLICATION_DATE,concat(s.CREATE_DATE , s.CREATE_TIME) as date_time ,s.CREATE_OPID,a.POPULATION FROM stagehistory s inner join people on s.people_code_id = people.people_code_id inner join stageranking r on s.FIELD_ID=r.STAGERANKING_ID inner join code_appstatus app on r.CODE_VALUE_KEY=app.CODE_VALUE_KEY inner join academic a on a.PEOPLE_CODE_ID=s.PEOPLE_CODE_ID WHERE a.ACADEMIC_YEAR=s.ACADEMIC_YEAR and a.ACADEMIC_TERM=s.ACADEMIC_TERM and a.ACADEMIC_YEAR = '"""+l1[i]+"""'  and a.ACADEMIC_TERM= '"""+l2[j]+"""'  and r.CODE_TABLE = 'CODE_APPSTATUS' and a.application_date is not null and s.CURRICULUM <> 'NONMAT' and s.DEGREE <> 'CDNP' and concat(s.CREATE_DATE , s.CREATE_TIME )> a.APPLICATION_DATE ORDER BY PEOPLE_CODE_ID, date_time asc""")
+        
+        new_dynamic_frame = DynamicFrame.fromDF(sql_df, glueContext, "new_dynamic_frame")
+        
+        ## @type: DataSink
+        ## @args: [catalog_connection = "Fnu_Dwh_Redshift", connection_options = {"dbtable": "Applicants", "database": "dwhfnu"}, redshift_tmp_dir = TempDir, transformation_ctx = "datasink4"]
+        ## @return: datasink4
+        ## @inputs: [frame = dropnullfields3]
+        datasink = glueContext.write_dynamic_frame.from_jdbc_conf(frame = new_dynamic_frame , catalog_connection = "Fnu_Dwh_Redshift", connection_options = {"dbtable": "FNU_Applicants", "database": "dwhfnu"}, redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasink")
+        
+        sql_df1 = spark.sql("""SELECT distinct s.STAGEHISTORY_ID,s.PEOPLE_CODE_ID, people.FIRST_NAME, people.LAST_NAME,s.ACADEMIC_YEAR,s.ACADEMIC_TERM,s.DEGREE,s.CURRICULUM,r.CODE_VALUE_KEY,decis.LONG_DESC,a.APPLICATION_DATE,concat(s.CREATE_DATE , s.CREATE_TIME) as date_time,s.CREATE_OPID,a.POPULATION FROM stagehistory s inner join people on s.people_code_id = people.people_code_id inner join stageranking r on s.FIELD_ID=r.STAGERANKING_ID inner join code_appdecision decis on r.CODE_VALUE_KEY=decis.CODE_VALUE_KEY inner join academic a on a.PEOPLE_CODE_ID=s.PEOPLE_CODE_ID WHERE a.ACADEMIC_YEAR=s.ACADEMIC_YEAR and a.ACADEMIC_TERM=s.ACADEMIC_TERM and a.ACADEMIC_YEAR = '"""+l1[i]+"""'  and a.ACADEMIC_TERM= '"""+l2[j]+"""'  and a.ACADEMIC_SESSION = 'MAIN' and r.CODE_TABLE = 'CODE_APPDECISION' and a.application_date is not null and s.CURRICULUM <> 'NONMAT' and s.DEGREE <> 'CDNP' and concat(s.CREATE_DATE , s.CREATE_TIME) > a.APPLICATION_DATE ORDER BY PEOPLE_CODE_ID, date_time desc""")
+        
+        new_dynamic_frame1 = DynamicFrame.fromDF(sql_df1, glueContext, "new_dynamic_frame1")
+        
+        
+        datasink1 = glueContext.write_dynamic_frame.from_jdbc_conf(frame = new_dynamic_frame1 , catalog_connection = "Fnu_Dwh_Redshift", connection_options = {"dbtable": "FNU_AppDecision", "database": "dwhfnu"}, redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasink1")
+        
+        df6 = new_dynamic_frame.toDF()
+        df7 = new_dynamic_frame1.toDF()
+        
+        df6.createOrReplaceTempView("Applicants")
+        df7.createOrReplaceTempView("AppDecision")
+        
+        sql_df2 = spark.sql("""select ROW_NUMBER() over (PARTITION BY PEOPLE_CODE_ID, CURRICULUM order by DATE_TIME desc) as Row_ ,PEOPLE_CODE_ID, LAST_NAME, FIRST_NAME, ACADEMIC_YEAR, ACADEMIC_TERM, DEGREE, curriculum, POPULATION,long_desc, application_date, date_time, create_OPID from AppDecision""")
+        new_dynamic_frame2 = DynamicFrame.fromDF(sql_df2, glueContext, "new_dynamic_frame2")
+        
+        
+        result = new_dynamic_frame2.toDF().filter("row_< 2")
+        my_dynamic_frame = DynamicFrame.fromDF(result, glueContext, "my_dynamic_frame")
+        
+        datasink2 = glueContext.write_dynamic_frame.from_jdbc_conf(frame = my_dynamic_frame , catalog_connection = "Fnu_Dwh_Redshift", connection_options = {"dbtable": "FNU_AppDecisionFinal", "database": "dwhfnu"}, redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasink2")
+        
+        sql_df3 = spark.sql("""SELECT DISTINCT PEOPLE_CODE_ID, FIRST_NAME, LAST_NAME, CURRICULUM as defer_track  FROM Applicants WHERE CODE_VALUE_KEY='CANC' """)
+        new_dynamic_frame3 = DynamicFrame.fromDF(sql_df3, glueContext, "new_dynamic_frame3")
+        datasink3 = glueContext.write_dynamic_frame.from_jdbc_conf(frame = new_dynamic_frame3 , catalog_connection = "Fnu_Dwh_Redshift", connection_options = {"dbtable": "FNU_Appdefer", "database": "dwhfnu"}, redshift_tmp_dir = "s3://fns-test", transformation_ctx = "datasink3")
+        
+job.commit()
+
+
